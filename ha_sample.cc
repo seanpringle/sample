@@ -112,7 +112,7 @@ static void str_reset(str_t *str)
   str->length = 0;
 }
 
-static void str_cat(str_t *str, char *buffer, size_t length)
+static void str_cat(str_t *str, const char *buffer, size_t length)
 {
   if (buffer && length > 0)
   {
@@ -266,7 +266,7 @@ static uchar* sample_field(SampleTable *table, uchar *row, uint field)
       case SAMPLE_NULL:
         break;
       case SAMPLE_STRING:
-        offset += *((uint*)&row[offset]) + sizeof(uint) + sizeof(uint);
+        offset += *((uint*)&row[offset]) + sizeof(uint);
         break;
       case SAMPLE_TINYSTRING:
         offset += *((uint8_t*)&row[offset]) + sizeof(uint8_t);
@@ -295,7 +295,7 @@ static uchar* sample_field_buffer(uchar *row)
   uchar type = *row++;
   switch (type) {
     case SAMPLE_STRING:
-      row += sizeof(uint) + sizeof(uint);
+      row += sizeof(uint);
       break;
     case SAMPLE_TINYSTRING:
       row += sizeof(uint8_t);
@@ -343,7 +343,7 @@ static uint64 sample_field_width(uchar *row)
     case SAMPLE_NULL:
       break;
     case SAMPLE_STRING:
-      length += *((uint*)row) + sizeof(uint) + sizeof(uint);
+      length += *((uint*)row) + sizeof(uint);
       break;
     case SAMPLE_TINYSTRING:
       length += *((uint8_t*)row) + sizeof(uint8_t);
@@ -552,34 +552,43 @@ SampleRow* ha_sample::record_place(uchar *buf)
 {
   SampleRow *row = (SampleRow*) sample_alloc(sizeof(SampleRow));
 
-  size_t length = 0;
-
-  uint real_lengths[table->s->fields];
-  memset(real_lengths, 0, sizeof(real_lengths));
-
-  uint comp_lengths[table->s->fields];
-  memset(comp_lengths, 0, sizeof(comp_lengths));
-
-  uchar *compressed[table->s->fields];
-  memset(compressed, 0, sizeof(compressed));
+  str_t *str = str_alloc(32);
 
   for (uint col = 0; col < table->s->fields; col++)
   {
     Field *field = table->field[col];
 
-    length += 1;
-
     if (field->is_null())
     {
-      // nop
+      uchar type = SAMPLE_NULL;
+      str_cat(str, (char*)&type, sizeof(uchar));
     }
     else
     if (field->result_type() == INT_RESULT)
     {
-      if (field->val_int() < 128 && field->val_int() > -128)
-        length += sizeof(int8_t);
+      uchar type;
+      int64 n = field->val_int();
+      if (n > -128 && n < 128)
+      {
+        type = SAMPLE_INT08;
+        str_cat(str, (char*)&type, sizeof(uchar));
+        int8_t n8 = n;
+        str_cat(str, (char*)&n8, sizeof(int8_t));
+      }
       else
-        length += sizeof(int64);
+      if (n > INT_MIN && n < INT_MAX)
+      {
+        type = SAMPLE_INT32;
+        str_cat(str, (char*)&type, sizeof(uchar));
+        int32_t n32 = n;
+        str_cat(str, (char*)&n32, sizeof(int32_t));
+      }
+      else
+      {
+        type = SAMPLE_INT64;
+        str_cat(str, (char*)&type, sizeof(uchar));
+        str_cat(str, (char*)&n, sizeof(int64_t));
+      }
     }
     else
     {
@@ -589,79 +598,28 @@ SampleRow* ha_sample::record_place(uchar *buf)
 
       if (tmp.length() < 256)
       {
-        real_lengths[col] = tmp.length();
-        length += tmp.length() + sizeof(uint8_t);
+        uchar type = SAMPLE_TINYSTRING;
+        str_cat(str, (char*)&type, sizeof(uchar));
+        uchar length = tmp.length();
+        str_cat(str, (char*)&length, sizeof(uchar));
+        str_cat(str, tmp.ptr(), tmp.length());
       }
       else
       {
-        real_lengths[col] = tmp.length();
-        comp_lengths[col] = real_lengths[col];
-        compressed[col] = (uchar*) sample_alloc(real_lengths[col]);
-        memmove(compressed[col], tmp.ptr(), real_lengths[col]);
-        length += comp_lengths[col] + sizeof(uint) + sizeof(uint);
+        uchar type = SAMPLE_STRING;
+        str_cat(str, (char*)&type, sizeof(uchar));
+        uint length = tmp.length();
+        str_cat(str, (char*)&length, sizeof(uint));
+        str_cat(str, tmp.ptr(), tmp.length());
       }
     }
   }
 
-  row->buffer = (uchar*) sample_alloc(length);
-  row->length = length;
+  row->buffer = (uchar*)str->buffer;
+  row->length = str->length;
+  str->buffer = NULL;
 
-  for (uint col = 0; col < table->s->fields; col++)
-  {
-    Field *field = table->field[col];
-    uchar *buff = sample_field(sample_table, row->buffer, col);
-
-    if (field->is_null())
-    {
-      *buff = SAMPLE_NULL;
-    }
-    else
-    if (field->result_type() == INT_RESULT)
-    {
-      if (field->val_int() < 128 && field->val_int() > -128)
-      {
-        *buff++ = SAMPLE_INT08;
-        *((int8_t*)buff) = field->val_int();
-      }
-      else
-      if (field->val_int() < INT_MAX && field->val_int() > INT_MIN)
-      {
-        *buff++ = SAMPLE_INT32;
-        *((int32_t*)buff) = field->val_int();
-      }
-      else
-      {
-        *buff++ = SAMPLE_INT64;
-        *((int64_t*)buff) = field->val_int();
-      }
-    }
-    else
-    {
-      if (!compressed[col])
-      {
-        char pad[1024];
-        String tmp(pad, sizeof(pad), &my_charset_bin);
-        field->val_str(&tmp, &tmp);
-
-        *buff++ = SAMPLE_TINYSTRING;
-        *((uint8_t*)buff) = tmp.length();
-        buff += sizeof(uint8_t);
-        memmove(buff, tmp.ptr(), tmp.length());
-      }
-      else
-      {
-        *buff++ = SAMPLE_STRING;
-        *((uint*)buff) = comp_lengths[col];
-        buff += sizeof(uint);
-        *((uint*)buff) = real_lengths[col];
-        buff += sizeof(uint);
-        memmove(buff, compressed[col], comp_lengths[col]);
-      }
-    }
-
-    if (compressed[col])
-      sample_free(compressed[col]);
-  }
+  str_free(str);
 
   return row;
 }
@@ -750,9 +708,10 @@ int ha_sample::rnd_next(uchar *buf)
 
   if (!sample_rows)
   {
+    list_t *list = list_alloc();
     pthread_mutex_lock(&sample_table->mutex);
     sample_rows = sample_table->rows;
-    sample_table->rows = list_alloc();
+    sample_table->rows = list;
     pthread_mutex_unlock(&sample_table->mutex);
   }
 
