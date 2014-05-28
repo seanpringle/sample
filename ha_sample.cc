@@ -429,6 +429,10 @@ ha_sample::ha_sample(handlerton *hton, TABLE_SHARE *table_arg)
   sample_trash = NULL;
   sample_rows  = NULL;
   sample_row   = NULL;
+
+  pthread_mutex_lock(&sample_seed_mutex);
+  srand48_r(sample_seed++, &sample_rand);
+  pthread_mutex_unlock(&sample_seed_mutex);
 }
 
 static const char *ha_sample_exts[] = {
@@ -471,11 +475,6 @@ int ha_sample::open(const char *name, int mode, uint test_if_locked)
   sample_table->users++;
 
   pthread_mutex_unlock(&sample_tables_mutex);
-
-  pthread_mutex_lock(&sample_seed_mutex);
-  srand48_r(sample_seed++, &sample_rand);
-  pthread_mutex_unlock(&sample_seed_mutex);
-
   counter_rows_inserted = 0;
 
   return sample_table ? 0: -1;
