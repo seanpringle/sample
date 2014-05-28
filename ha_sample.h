@@ -47,7 +47,6 @@ typedef struct _SampleTable {
   char *name;
   uint users;
   uint width;
-  pthread_rwlock_t rwlock;
   uint rate;
   bool dropping;
   pthread_mutex_t mutex;

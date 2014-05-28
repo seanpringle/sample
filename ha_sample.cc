@@ -228,7 +228,6 @@ static SampleTable* sample_table_open(const char *name, uint width, uint rate, u
     table->limit = limit;
     table->rows  = list_alloc();
 
-    pthread_rwlock_init(&table->rwlock, NULL);
     pthread_mutex_init(&table->mutex, NULL);
 
     thr_lock_init(&table->mysql_lock);
@@ -673,9 +672,7 @@ int ha_sample::write_row(uchar *buf)
   sample_debug("%s", __func__);
 
   long r; lrand48_r(&sample_rand, &r);
-  pthread_rwlock_rdlock(&sample_table->rwlock);
   bool complete = r % sample_table->rate == 0;
-  pthread_rwlock_unlock(&sample_table->rwlock);
 
   if (complete)
   {
@@ -683,16 +680,24 @@ int ha_sample::write_row(uchar *buf)
     my_bitmap_map *org_bitmap = dbug_tmp_use_all_columns(table, table->read_set);
 
     SampleRow *row = record_place(buf);
-    pthread_mutex_lock(&sample_table->mutex);
 
-    if (sample_table->limit > sample_table->rows->length)
-      list_insert_head(sample_table->rows, row);
-    else
+    bool inserted = FALSE;
+
+    if (pthread_mutex_trylock(&sample_table->mutex) == 0)
+    {
+      if (sample_table->limit > sample_table->rows->length)
+      {
+        list_insert_head(sample_table->rows, row);
+        inserted = TRUE;
+      }
+      pthread_mutex_unlock(&sample_table->mutex);
+    }
+
+    if (!inserted)
     {
       sample_free(row->buffer);
       sample_free(row);
     }
-    pthread_mutex_unlock(&sample_table->mutex);
 
     dbug_tmp_restore_column_map(table->read_set, org_bitmap);
     counter_rows_inserted++;
@@ -940,7 +945,7 @@ static MYSQL_SYSVAR_UINT(rate, sample_rate, 0,
   "Sample rate.", 0, sample_rate_update, 1000, 1, UINT_MAX, 1);
 
 static MYSQL_SYSVAR_UINT(limit, sample_limit, 0,
-  "Table rows limit.", 0, sample_limit_update, 1000000, 1, UINT_MAX, 1);
+  "Table rows limit.", 0, sample_limit_update, 10000, 1, UINT_MAX, 1);
 
 static struct st_mysql_sys_var *sample_system_variables[] = {
     MYSQL_SYSVAR(verbose),
