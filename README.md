@@ -11,5 +11,5 @@ MariaDB storage engine for sampling stuff.
 ### Example: General Query Log
 
     SET GLOBAL sample_rate=1000;
-    SET GLOBAL sample_limit=1000000;
+    SET GLOBAL sample_limit=10000;
     ALTER TABLE mysql.general_log ENGINE=SAMPLE;
