@@ -75,21 +75,21 @@ static void sample_error(const char *format, ...)
 
 static void* sample_alloc(size_t bytes)
 {
-  void *ptr = calloc(bytes, 1);
+  void *ptr = my_malloc(bytes, MYF(MY_ZEROFILL));
   sample_assert(ptr, "calloc failed %llu bytes", bytes);
   return ptr;
 }
 
 static void* sample_realloc(void *ptr, size_t bytes)
 {
-  void *ptr2 = realloc(ptr, bytes);
+  void *ptr2 = my_realloc(ptr, bytes, MYF(0));
   sample_assert(ptr2, "realloc failed %llu bytes", bytes);
   return ptr2;
 }
 
 static void sample_free(void *ptr)
 {
-  free(ptr);
+  my_free(ptr);
 }
 
 static str_t* str_alloc(size_t limit)
@@ -252,37 +252,6 @@ static void sample_table_drop(SampleTable *table, bool hard)
   list_delete(sample_tables, table);
   sample_free(table->name);
   sample_free(table);
-}
-
-static uchar* sample_field(SampleTable *table, uchar *row, uint field)
-{
-  sample_assert(field < table->width, "impossible field offset");
-
-  uint offset = 0;
-  for (uint col = 0; col < field; col++)
-  {
-    uchar type = row[offset++];
-    switch (type) {
-      case SAMPLE_NULL:
-        break;
-      case SAMPLE_STRING:
-        offset += *((uint*)&row[offset]) + sizeof(uint);
-        break;
-      case SAMPLE_TINYSTRING:
-        offset += *((uint8_t*)&row[offset]) + sizeof(uint8_t);
-        break;
-      case SAMPLE_INT64:
-        offset += sizeof(int64_t);
-        break;
-      case SAMPLE_INT32:
-        offset += sizeof(int32_t);
-        break;
-      case SAMPLE_INT08:
-        offset += sizeof(int8_t);
-        break;
-    }
-  }
-  return &row[offset];
 }
 
 static uchar sample_field_type(uchar *row)
@@ -570,17 +539,17 @@ SampleRow* ha_sample::record_place(uchar *buf)
       int64 n = field->val_int();
       if (n > -128 && n < 128)
       {
+        int8_t n8 = n;
         type = SAMPLE_INT08;
         str_cat(str, (char*)&type, sizeof(uchar));
-        int8_t n8 = n;
         str_cat(str, (char*)&n8, sizeof(int8_t));
       }
       else
       if (n > INT_MIN && n < INT_MAX)
       {
+        int32_t n32 = n;
         type = SAMPLE_INT32;
         str_cat(str, (char*)&type, sizeof(uchar));
-        int32_t n32 = n;
         str_cat(str, (char*)&n32, sizeof(int32_t));
       }
       else
@@ -598,17 +567,17 @@ SampleRow* ha_sample::record_place(uchar *buf)
 
       if (tmp.length() < 256)
       {
+        uchar length = tmp.length();
         uchar type = SAMPLE_TINYSTRING;
         str_cat(str, (char*)&type, sizeof(uchar));
-        uchar length = tmp.length();
         str_cat(str, (char*)&length, sizeof(uchar));
         str_cat(str, tmp.ptr(), tmp.length());
       }
       else
       {
+        uint length = tmp.length();
         uchar type = SAMPLE_STRING;
         str_cat(str, (char*)&type, sizeof(uchar));
-        uint length = tmp.length();
         str_cat(str, (char*)&length, sizeof(uint));
         str_cat(str, tmp.ptr(), tmp.length());
       }
